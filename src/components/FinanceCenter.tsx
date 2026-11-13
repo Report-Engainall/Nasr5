@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import {
-  AlertTriangle, Banknote, Building2, Check, ChevronLeft, CircleDollarSign,
+  AlertTriangle, Building2, Check, CircleDollarSign,
   FileText, Landmark, Package, Plus, RefreshCw, ShoppingCart, TrendingUp, Wallet, X,
 } from 'lucide-react';
 import {
@@ -262,6 +262,3 @@ function ReplenishmentView({ onNotice }: { onNotice: (m: string) => void }) {
     </div> : <div className="sf-empty" style={{ padding: '40px 0' }}><Check size={30} /><span>المخزون ضمن الحدود الآمنة</span><small>لا توجد أصناف تحتاج إعادة توريد الآن</small></div>}
   </>;
 }
-
-export function BackChevron() { return <ChevronLeft size={15} />; }
-export const FinanceIcons = { AlertTriangle, Banknote };
