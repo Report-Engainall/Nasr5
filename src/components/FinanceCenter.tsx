@@ -153,7 +153,7 @@ function PaymentModal({ accounts, customers, suppliers, onClose, onSaved }: { ac
   return <Modal title={direction === 'receipt' ? 'تحصيل من عميل' : 'سداد لمورد'} onClose={onClose}>
     <div className="form-grid">
       <Field label="نوع العملية"><select value={direction} onChange={(e) => { setDirection(e.target.value as 'receipt' | 'payment'); setPartyId(''); }}><option value="receipt">تحصيل من عميل</option><option value="payment">سداد لمورد</option></select></Field>
-      <Field label={direction === 'receipt' ? 'العميل' : 'المورد'}><select value={partyId} onChange={(e) => setPartyId(e.target.value)}><option value="">اختر...</option>{(direction === 'receipt' ? customers : suppliers).map((p) => <option key={p.id} value={p.id}>{direction === 'receipt' ? p.business_name : p.name} — مستحق {formatCurrency(p.current_balance)}</option>)}</select></Field>
+      <Field label={direction === 'receipt' ? 'العميل' : 'المورد'}><select value={partyId} onChange={(e) => setPartyId(e.target.value)}><option value="">اختر...</option>{(direction === 'receipt' ? customers : suppliers).map((p: Customer | Supplier) => <option key={p.id} value={p.id}>{direction === 'receipt' ? (p as Customer).business_name : (p as Supplier).name} — مستحق {formatCurrency(p.current_balance)}</option>)}</select></Field>
     </div>
     {party && <div className="payment-party-note">الرصيد المستحق حالياً: <strong>{formatCurrency(party.current_balance)}</strong></div>}
     <div className="form-grid">
@@ -256,7 +256,7 @@ function ReplenishmentView({ onNotice }: { onNotice: (m: string) => void }) {
           {s.daysOfCover !== null && <div><strong>التغطية</strong><span>{formatNumber(s.daysOfCover)} يوم</span></div>}
         </div>
         {s.suggestedQty > 0
-          ? <Button style={{ marginTop: 14 }} disabled={creating === s.product.id} onClick={() => act(s.product.id)}>{creating === s.product.id ? 'جار الإنشاء...' : <><ShoppingCart size={15} /> إنشاء أمر شراء ({formatNumber(s.suggestedQty)} {s.product.unit})</>}</Button>
+          ? <div style={{ marginTop: 14 }}><Button disabled={creating === s.product.id} onClick={() => act(s.product.id)}>{creating === s.product.id ? 'جار الإنشاء...' : <><ShoppingCart size={15} /> إنشاء أمر شراء ({formatNumber(s.suggestedQty)} {s.product.unit})</>}</Button></div>
           : <div className="replen-ok"><Check size={15} /> الكمية القادمة تكفي لتغطية الحد</div>}
       </article>)}
     </div> : <div className="sf-empty" style={{ padding: '40px 0' }}><Check size={30} /><span>المخزون ضمن الحدود الآمنة</span><small>لا توجد أصناف تحتاج إعادة توريد الآن</small></div>}

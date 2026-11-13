@@ -45,6 +45,7 @@ export type Supplier = {
   phone: string | null;
   email: string | null;
   status: string;
+  current_balance: number;
 };
 
 export type Order = {
@@ -170,6 +171,11 @@ export type ImportJobRow = {
   created_at: string;
 };
 
+export type TrackedOrder = OrderWithCustomer & {
+  items?: OrderItem[];
+  status_history?: { to_status: string; notes: string | null; created_at: string }[];
+};
+
 export type ProductWithInventory = Product & {
   inventory?: InventoryBalance;
   category?: Category;
@@ -177,4 +183,65 @@ export type ProductWithInventory = Product & {
 
 export type OrderWithCustomer = Order & {
   customer?: Customer;
+};
+
+export type CashAccount = {
+  id: string;
+  organization_id: string;
+  name: string;
+  type: string;
+  currency: string;
+  opening_balance: number;
+  is_active: boolean;
+  created_at: string;
+};
+
+export type CashMovement = {
+  id: string;
+  cash_account_id: string;
+  direction: 'in' | 'out';
+  amount: number;
+  currency: string;
+  source_type: string | null;
+  reason: string | null;
+  created_at: string;
+};
+
+export type Payment = {
+  id: string;
+  payment_number: string;
+  direction: 'receipt' | 'payment';
+  party_type: 'customer' | 'supplier';
+  party_id: string;
+  order_id: string | null;
+  amount: number;
+  currency: string;
+  method: string;
+  cash_account_id: string | null;
+  notes: string | null;
+  created_at: string;
+};
+
+export type PurchaseOrder = {
+  id: string;
+  po_number: string;
+  supplier_id: string | null;
+  status: string;
+  total_amount: number;
+  currency: string;
+  expected_date: string | null;
+  notes: string | null;
+  created_at: string;
+};
+
+export type PurchaseOrderItem = {
+  id: string;
+  purchase_order_id: string;
+  product_id: string | null;
+  item_code: string | null;
+  product_name_snapshot: string;
+  unit_snapshot: string | null;
+  quantity: number;
+  unit_cost: number;
+  line_total: number;
 };

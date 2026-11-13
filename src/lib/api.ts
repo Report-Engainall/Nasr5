@@ -3,6 +3,11 @@ import type {
   Product, Category, Customer, Supplier, Order, OrderItem,
   InventoryBalance, PricingRule, Promotion, AiAlert, AiTask, Notification,
   ProductWithInventory, OrderWithCustomer, AdminSetting, ImportJob, ImportJobRow,
+  TrackedOrder, CashAccount, CashMovement, Payment, PurchaseOrder, PurchaseOrderItem,
+} from './types';
+
+export type {
+  TrackedOrder, CashAccount, CashMovement, Payment, PurchaseOrder, PurchaseOrderItem,
 } from './types';
 
 // ─── Products ───
@@ -394,6 +399,8 @@ export async function fetchImportRows(jobId: string): Promise<ImportJobRow[]> {
 }
 
 // ─── Server-verified checkout ───
+import { formatNumber } from './format';
+
 export type PlaceOrderInput = {
   customer_id: string;
   items: { product_id: string; quantity: number }[];
@@ -435,11 +442,6 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
 }
 
 // ─── Order tracking (guest or customer) ───
-export type TrackedOrder = OrderWithCustomer & {
-  items?: OrderItem[];
-  status_history?: { to_status: string; notes: string | null; created_at: string }[];
-};
-
 export async function fetchOrderByNumber(orderNumber: string, phone?: string): Promise<TrackedOrder> {
   const { data: order, error } = await supabase
     .from('orders')
@@ -462,23 +464,6 @@ export async function fetchOrderByNumber(orderNumber: string, phone?: string): P
 }
 
 // ─── Finance: cash accounts, payments ───
-export type CashAccount = {
-  id: string; organization_id: string; name: string; type: string;
-  currency: string; opening_balance: number; is_active: boolean; created_at: string;
-};
-
-export type CashMovement = {
-  id: string; cash_account_id: string; direction: 'in' | 'out'; amount: number;
-  currency: string; source_type: string | null; reason: string | null; created_at: string;
-};
-
-export type Payment = {
-  id: string; payment_number: string; direction: 'receipt' | 'payment';
-  party_type: 'customer' | 'supplier'; party_id: string; order_id: string | null;
-  amount: number; currency: string; method: string; cash_account_id: string | null;
-  notes: string | null; created_at: string;
-};
-
 export async function fetchCashAccounts(): Promise<CashAccount[]> {
   const { data, error } = await supabase
     .from('cash_accounts').select('*').eq('organization_id', ORG_ID).order('created_at');
@@ -548,18 +533,6 @@ export async function recordPayment(input: {
 }
 
 // ─── Procurement: purchase orders + replenishment engine ───
-export type PurchaseOrder = {
-  id: string; po_number: string; supplier_id: string | null; status: string;
-  total_amount: number; currency: string; expected_date: string | null;
-  notes: string | null; created_at: string;
-};
-
-export type PurchaseOrderItem = {
-  id: string; purchase_order_id: string; product_id: string | null; item_code: string | null;
-  product_name_snapshot: string; unit_snapshot: string | null;
-  quantity: number; unit_cost: number; line_total: number;
-};
-
 export async function fetchPurchaseOrders(): Promise<PurchaseOrder[]> {
   const { data, error } = await supabase
     .from('purchase_orders').select('*').eq('organization_id', ORG_ID)
