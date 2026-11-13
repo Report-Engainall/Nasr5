@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   Activity, AlertTriangle, BarChart3, Bell, Bot, Box, Check, ChevronLeft,
-  CircleDollarSign, Database, FileText, LayoutDashboard, LogOut, Menu, Package,
+  CircleDollarSign, Database, FileText, Landmark, LayoutDashboard, LogOut, Menu, Package,
   Pencil, Plus, RefreshCw, Search, Settings, ShoppingCart, SlidersHorizontal,
   Smartphone, Store, Tag, Trash2, TrendingUp, Users, Zap,
 } from 'lucide-react';
@@ -22,8 +22,9 @@ import {
   TableWrap, Modal, Notifications, OrderDetail, SettingsPage, Suppliers,
 } from '@/components/AdminPages';
 import { OperationsCenter } from '@/components/OperationsCenter';
+import { FinanceCenter } from '@/components/FinanceCenter';
 
-type View = 'dashboard' | 'products' | 'customers' | 'orders' | 'pricing' | 'offers' | 'reports' | 'data' | 'operations' | 'notifications' | 'ai' | 'suppliers' | 'devices' | 'settings';
+type View = 'dashboard' | 'products' | 'customers' | 'orders' | 'finance' | 'pricing' | 'offers' | 'reports' | 'data' | 'operations' | 'notifications' | 'ai' | 'suppliers' | 'devices' | 'settings';
 type IconType = typeof LayoutDashboard;
 
 const nav: { id: View; label: string; icon: IconType }[] = [
@@ -31,6 +32,7 @@ const nav: { id: View; label: string; icon: IconType }[] = [
   { id: 'products', label: 'إدارة المنتجات', icon: Box },
   { id: 'customers', label: 'العملاء', icon: Users },
   { id: 'orders', label: 'الطلبات', icon: ShoppingCart },
+  { id: 'finance', label: 'المركز المالي', icon: Landmark },
   { id: 'pricing', label: 'التسعير والمخزون', icon: SlidersHorizontal },
   { id: 'offers', label: 'العروض', icon: Tag },
   { id: 'suppliers', label: 'الموردون', icon: Package },
@@ -72,6 +74,7 @@ function AppContent() {
           {view === 'customers' && <Customers onNotice={showNotice} />}
           {view === 'orders' && !orderDetailId && <Orders onViewDetail={setOrderDetailId} />}
           {view === 'orders' && orderDetailId && <OrderDetail orderId={orderDetailId} onBack={() => setOrderDetailId(null)} onNotice={showNotice} />}
+          {view === 'finance' && <FinanceCenter onNotice={showNotice} />}
           {view === 'pricing' && <Pricing onNotice={showNotice} />}
           {view === 'offers' && <Offers onNotice={showNotice} />}
           {view === 'suppliers' && <Suppliers onNotice={showNotice} />}

@@ -461,6 +461,242 @@ export async function fetchOrderByNumber(orderNumber: string, phone?: string): P
   return { ...order, status_history: history ?? [] } as TrackedOrder;
 }
 
+// ─── Finance: cash accounts, payments ───
+export type CashAccount = {
+  id: string; organization_id: string; name: string; type: string;
+  currency: string; opening_balance: number; is_active: boolean; created_at: string;
+};
+
+export type CashMovement = {
+  id: string; cash_account_id: string; direction: 'in' | 'out'; amount: number;
+  currency: string; source_type: string | null; reason: string | null; created_at: string;
+};
+
+export type Payment = {
+  id: string; payment_number: string; direction: 'receipt' | 'payment';
+  party_type: 'customer' | 'supplier'; party_id: string; order_id: string | null;
+  amount: number; currency: string; method: string; cash_account_id: string | null;
+  notes: string | null; created_at: string;
+};
+
+export async function fetchCashAccounts(): Promise<CashAccount[]> {
+  const { data, error } = await supabase
+    .from('cash_accounts').select('*').eq('organization_id', ORG_ID).order('created_at');
+  if (error) throw error;
+  return data as CashAccount[];
+}
+
+export async function createCashAccount(input: { name: string; type: string; currency: string; opening_balance: number }): Promise<CashAccount> {
+  const { data, error } = await supabase
+    .from('cash_accounts')
+    .insert({ ...input, organization_id: ORG_ID }).select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function fetchCashMovements(limit = 50): Promise<CashMovement[]> {
+  const { data, error } = await supabase
+    .from('cash_movements').select('*').eq('organization_id', ORG_ID)
+    .order('created_at', { ascending: false }).limit(limit);
+  if (error) throw error;
+  return data as CashMovement[];
+}
+
+export async function fetchPayments(): Promise<Payment[]> {
+  const { data, error } = await supabase
+    .from('payments').select('*').eq('organization_id', ORG_ID)
+    .order('created_at', { ascending: false }).limit(100);
+  if (error) throw error;
+  return data as Payment[];
+}
+
+function paymentErrorMessage(raw: string): string {
+  if (raw.includes('INVALID_AMOUNT')) return 'المبلغ يجب أن يكون أكبر من صفر';
+  if (raw.includes('NO_OUTSTANDING_BALANCE')) return 'لا يوجد رصيد مستحق على هذه الجهة';
+  if (raw.includes('PARTY_NOT_FOUND')) return 'الجهة غير موجودة';
+  if (raw.includes('ACCOUNT_NOT_FOUND')) return 'الصندوق أو الحساب غير صالح';
+  return 'تعذر تسجيل الدفعة';
+}
+
+export async function recordPayment(input: {
+  direction: 'receipt' | 'payment';
+  party_type: 'customer' | 'supplier';
+  party_id: string;
+  amount: number;
+  method: string;
+  cash_account_id: string | null;
+  order_id?: string | null;
+  notes?: string;
+}): Promise<{ payment_id: string; payment_number?: string; duplicate: boolean }> {
+  const { data: accounts } = await supabase
+    .from('cash_accounts').select('currency').eq('id', input.cash_account_id ?? '').maybeSingle();
+  const { data, error } = await supabase.rpc('record_payment', {
+    p_organization_id: ORG_ID,
+    p_direction: input.direction,
+    p_party_type: input.party_type,
+    p_party_id: input.party_id,
+    p_amount: input.amount,
+    p_currency: accounts?.currency ?? 'YER',
+    p_method: input.method,
+    p_cash_account_id: input.cash_account_id,
+    p_order_id: input.order_id ?? null,
+    p_notes: input.notes ?? null,
+    p_idempotency_key: `pay-${crypto.randomUUID()}`,
+  });
+  if (error) throw new Error(paymentErrorMessage(error.message));
+  return data as { payment_id: string; payment_number?: string; duplicate: boolean };
+}
+
+// ─── Procurement: purchase orders + replenishment engine ───
+export type PurchaseOrder = {
+  id: string; po_number: string; supplier_id: string | null; status: string;
+  total_amount: number; currency: string; expected_date: string | null;
+  notes: string | null; created_at: string;
+};
+
+export type PurchaseOrderItem = {
+  id: string; purchase_order_id: string; product_id: string | null; item_code: string | null;
+  product_name_snapshot: string; unit_snapshot: string | null;
+  quantity: number; unit_cost: number; line_total: number;
+};
+
+export async function fetchPurchaseOrders(): Promise<PurchaseOrder[]> {
+  const { data, error } = await supabase
+    .from('purchase_orders').select('*').eq('organization_id', ORG_ID)
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return data as PurchaseOrder[];
+}
+
+export async function fetchPurchaseOrderItems(poId: string): Promise<PurchaseOrderItem[]> {
+  const { data, error } = await supabase
+    .from('purchase_order_items').select('*').eq('purchase_order_id', poId);
+  if (error) throw error;
+  return data as PurchaseOrderItem[];
+}
+
+export async function createPurchaseOrder(input: {
+  supplier_id: string | null;
+  expected_date?: string | null;
+  notes?: string;
+  items: { product_id: string; item_code: string; product_name: string; unit: string; quantity: number; unit_cost: number }[];
+}): Promise<PurchaseOrder> {
+  const totalAmount = input.items.reduce((sum, i) => sum + i.quantity * i.unit_cost, 0);
+  let poNumber = `PO-${Date.now().toString().slice(-8)}`;
+  const { data: clash } = await supabase
+    .from('purchase_orders').select('id').eq('organization_id', ORG_ID).eq('po_number', poNumber).maybeSingle();
+  if (clash) poNumber = `PO-${Date.now().toString().slice(-6)}${Math.floor(Math.random() * 90 + 10)}`;
+
+  const { data: po, error } = await supabase
+    .from('purchase_orders')
+    .insert({
+      organization_id: ORG_ID, po_number: poNumber, supplier_id: input.supplier_id,
+      status: 'submitted', total_amount: totalAmount, currency: 'YER',
+      expected_date: input.expected_date ?? null, notes: input.notes ?? null,
+    }).select().single();
+  if (error) throw error;
+
+  const { error: itemsError } = await supabase.from('purchase_order_items').insert(
+    input.items.map((i) => ({
+      purchase_order_id: po.id, product_id: i.product_id, item_code: i.item_code,
+      product_name_snapshot: i.product_name, unit_snapshot: i.unit,
+      quantity: i.quantity, unit_cost: i.unit_cost, line_total: i.quantity * i.unit_cost,
+    }))
+  );
+  if (itemsError) throw itemsError;
+  return po;
+}
+
+export async function receivePurchaseOrder(poId: string): Promise<void> {
+  const { data: items, error: itemsError } = await supabase
+    .from('purchase_order_items').select('*').eq('purchase_order_id', poId);
+  if (itemsError) throw itemsError;
+  const { error } = await supabase
+    .from('purchase_orders').update({ status: 'received', updated_at: new Date().toISOString() })
+    .eq('id', poId).eq('organization_id', ORG_ID).neq('status', 'received');
+  if (error) throw error;
+
+  // Each received item increases on-hand stock at the main warehouse
+  for (const item of items ?? []) {
+    if (!item.product_id || !item.quantity) continue;
+    const { data: balance } = await supabase
+      .from('inventory_balances').select('id, quantity_on_hand')
+      .eq('product_id', item.product_id).eq('warehouse_id', WAREHOUSE_ID).maybeSingle();
+    if (balance) {
+      await supabase.from('inventory_balances')
+        .update({ quantity_on_hand: Number(balance.quantity_on_hand) + Number(item.quantity), updated_at: new Date().toISOString() })
+        .eq('id', balance.id);
+    } else {
+      await supabase.from('inventory_balances').insert({
+        product_id: item.product_id, warehouse_id: WAREHOUSE_ID,
+        quantity_on_hand: item.quantity, quantity_reserved: 0, reorder_point: 0,
+      });
+    }
+    await supabase.from('inventory_movements').insert({
+      product_id: item.product_id, warehouse_id: WAREHOUSE_ID, movement_type: 'receipt',
+      quantity: item.quantity, reference_type: 'purchase_order', reference_id: poId,
+      reason: 'استلام أمر شراء',
+    });
+  }
+}
+
+export type ReplenishmentSuggestion = {
+  product: ProductWithInventory;
+  currentStock: number;
+  reorderPoint: number;
+  incomingQty: number;
+  daysOfCover: number | null;
+  suggestedQty: number;
+  reason: string;
+};
+
+export async function fetchReplenishmentSuggestions(): Promise<ReplenishmentSuggestion[]> {
+  const products = await fetchProducts();
+  const orders = await fetchOrders();
+  const pos = await fetchPurchaseOrders();
+  const { data: openPoItems } = await supabase
+    .from('purchase_order_items')
+    .select('product_id, quantity, purchase_order_id');
+  if (!openPoItems) return [];
+
+  const openPoIds = new Set(pos.filter((p) => p.status === 'submitted' || p.status === 'draft').map((p) => p.id));
+  const incomingByProduct = new Map<string, number>();
+  openPoItems.forEach((i: { product_id: string | null; quantity: number; purchase_order_id: string }) => {
+    if (i.product_id && openPoIds.has(i.purchase_order_id)) {
+      incomingByProduct.set(i.product_id, (incomingByProduct.get(i.product_id) ?? 0) + Number(i.quantity));
+    }
+  });
+
+  // Daily demand from delivered + processing orders over the last 30 days
+  const thirtyDaysAgo = Date.now() - 30 * 86400000;
+  const soldByProduct = new Map<string, number>();
+  const recentOrders = orders.filter((o) => new Date(o.created_at).getTime() >= thirtyDaysAgo
+    && (o.status === 'processing' || o.status === 'confirmed' || o.status === 'delivered'));
+  const items = await Promise.all(recentOrders.map((o) => fetchOrderItems(o.id)));
+  items.flat().forEach((i) => {
+    if (i.product_id) soldByProduct.set(i.product_id, (soldByProduct.get(i.product_id) ?? 0) + Number(i.quantity));
+  });
+
+  const suggestions: ReplenishmentSuggestion[] = [];
+  for (const product of products) {
+    const stock = product.inventory?.quantity_available ?? 0;
+    const reorderPoint = product.inventory?.reorder_point ?? product.min_stock ?? 0;
+    if (stock > reorderPoint) continue;
+    const dailyDemand = (soldByProduct.get(product.id) ?? 0) / 30;
+    const incoming = incomingByProduct.get(product.id) ?? 0;
+    const daysOfCover = dailyDemand > 0 ? Math.floor(stock / dailyDemand) : null;
+    const target = Math.max(reorderPoint * 2, dailyDemand * 30);
+    const suggestedQty = Math.max(Math.ceil(target - stock - incoming), 0);
+    const reason = stock <= 0
+      ? `الصنف نفد من المخزون${incoming > 0 ? `، والقادم قيد الاستلام ${formatNumber(incoming)}` : '، ولا يوجد أمر شراء مفتوح'}`
+      : daysOfCover !== null
+        ? `الرصيد يكفي ${formatNumber(daysOfCover)} يوماً فقط وفق مبيعات آخر 30 يوماً`
+        : `الرصيد ${formatNumber(stock)} عند حد إعادة الطلب ${formatNumber(reorderPoint)} دون مبيعات حديثة موثقة`;
+    suggestions.push({ product, currentStock: stock, reorderPoint, incomingQty: incoming, daysOfCover, suggestedQty, reason });
+  }
+  return suggestions.sort((a, b) => a.currentStock - b.currentStock);
+}
+
 // ─── Dashboard stats ───
 export async function fetchDashboardStats() {
   const [products, customers, orders, alerts, lowStock] = await Promise.all([
