@@ -185,6 +185,20 @@ export type OrderWithCustomer = Order & {
   customer?: Customer;
 };
 
+export type OrderRevision = {
+  id: string;
+  organization_id: string;
+  order_id: string;
+  revision_number: number;
+  reason: string;
+  items: { order_item_id: string; product_name: string; original_qty: number; requested_qty: number }[];
+  status: 'pending' | 'approved' | 'rejected';
+  new_order_id: string | null;
+  requested_phone: string | null;
+  decided_at: string | null;
+  created_at: string;
+};
+
 export type CashAccount = {
   id: string;
   organization_id: string;

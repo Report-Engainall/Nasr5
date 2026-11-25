@@ -1,13 +1,15 @@
+import { formatCurrency, formatNumber } from './format';
 import { supabase, ORG_ID, WAREHOUSE_ID } from './supabase';
 import type {
   Product, Category, Customer, Supplier, Order, OrderItem,
   InventoryBalance, PricingRule, Promotion, AiAlert, AiTask, Notification,
   ProductWithInventory, OrderWithCustomer, AdminSetting, ImportJob, ImportJobRow,
   TrackedOrder, CashAccount, CashMovement, Payment, PurchaseOrder, PurchaseOrderItem,
+  OrderRevision,
 } from './types';
 
 export type {
-  TrackedOrder, CashAccount, CashMovement, Payment, PurchaseOrder, PurchaseOrderItem,
+  TrackedOrder, CashAccount, CashMovement, Payment, PurchaseOrder, PurchaseOrderItem, OrderRevision,
 } from './types';
 
 // ─── Products ───
@@ -399,8 +401,6 @@ export async function fetchImportRows(jobId: string): Promise<ImportJobRow[]> {
 }
 
 // ─── Server-verified checkout ───
-import { formatNumber } from './format';
-
 export type PlaceOrderInput = {
   customer_id: string;
   items: { product_id: string; quantity: number }[];
@@ -464,20 +464,6 @@ export async function fetchOrderByNumber(orderNumber: string, phone?: string): P
 }
 
 // ─── Order revision cycle (customer request → merchant decision) ───
-export type OrderRevision = {
-  id: string;
-  organization_id: string;
-  order_id: string;
-  revision_number: number;
-  reason: string;
-  items: { order_item_id: string; product_name: string; original_qty: number; requested_qty: number }[];
-  status: 'pending' | 'approved' | 'rejected';
-  new_order_id: string | null;
-  requested_phone: string | null;
-  decided_at: string | null;
-  created_at: string;
-};
-
 export async function fetchOrderRevisions(orderId: string): Promise<OrderRevision[]> {
   const { data, error } = await supabase
     .from('order_revisions').select('*').eq('order_id', orderId)
@@ -564,7 +550,6 @@ export async function decideOrderRevision(input: {
         unit_snapshot: i.unit_snapshot,
         quantity: i.quantity,
         unit_price_snapshot: i.unit_price_snapshot,
-        discount_snapshot: i.discount_snapshot,
         line_total: Number(i.unit_price_snapshot) * Number(i.quantity),
       }))
     );

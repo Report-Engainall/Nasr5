@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import {
-  AlertTriangle, Bell, Bot, Check, ChevronLeft, Database,
+  AlertTriangle, Bell, Bot, Check, ChevronLeft, Database, FileText,
   Package, Plus, RefreshCw, Search, Settings, Smartphone,
   X, ExternalLink,
 } from 'lucide-react';
