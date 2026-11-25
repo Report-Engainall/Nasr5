@@ -4,7 +4,7 @@ import {
   Package, Tag, Phone, MapPin, Mail, Check, ChevronLeft, Menu,
   Heart, GitCompare, ArrowRight, Truck, Landmark, SlidersHorizontal, ClipboardList,
 } from 'lucide-react';
-import { fetchProducts, fetchCategories, fetchPromotions, fetchSettingsMap, fetchOrderByNumber, placeOrder } from '@/lib/api';
+import { fetchProducts, fetchCategories, fetchPromotions, fetchSettingsMap, fetchOrderByNumber, placeOrder, requestOrderRevision } from '@/lib/api';
 import { useFetch } from '@/lib/useFetch';
 import { formatCurrency, formatDate, formatNumber } from '@/lib/format';
 import type { ProductWithInventory, Category, Promotion, TrackedOrder } from '@/lib/types';
@@ -385,8 +385,68 @@ function OrderTracker({ onBack }: { onBack: () => void }) {
             <span>الإجمالي: <strong>{formatCurrency(result.total_amount)}</strong></span>
             <span>تاريخ الطلب: {formatDate(result.created_at)}</span>
           </div>
+          {result.status === 'pending' && <RevisionRequest order={result} onDone={() => setResult(null)} />}
         </div>
       )}
     </section>
   );
+}
+
+function RevisionRequest({ order, onDone }: { order: TrackedOrder; onDone: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState('');
+  const [items, setItems] = useState<Record<string, string>>({});
+  const [phone, setPhone] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState('');
+
+  const changedItems = (order.items ?? [])
+    .map((item) => ({ item, qty: Number(items[item.id] ?? '') }))
+    .filter((entry) => Number.isFinite(entry.qty) && items[entry.item.id] !== '' && entry.qty !== Number(entry.item.quantity) && entry.qty >= 0);
+
+  async function submit() {
+    if (!reason.trim()) { setError('اذكر سبب طلب التعديل'); return; }
+    if (!phone.trim()) { setError('رقم الهاتف مطلوب للتحقق'); return; }
+    if (!changedItems.length) { setError('عدّل كمية بند واحد على الأقل'); return; }
+    setSaving(true); setError('');
+    try {
+      await requestOrderRevision({
+        order_id: order.id,
+        order_number: order.order_number,
+        reason: reason.trim(),
+        phone: phone.trim(),
+        items: changedItems.map((e) => ({
+          order_item_id: e.item.id,
+          product_name: e.item.product_name_snapshot,
+          original_qty: Number(e.item.quantity),
+          requested_qty: e.qty,
+        })),
+      });
+      setDone(true); onDone();
+    } catch (e) { setError(e instanceof Error ? e.message : 'تعذر إرسال الطلب'); } finally { setSaving(false); }
+  }
+
+  if (done) return <div className="sf-revision-done"><Check size={16} /> أُرسل طلب التعديل للشركة، وسنخبرك بالقرار.</div>;
+
+  return <>
+    <button className="sf-btn-secondary" style={{ marginTop: 12, width: '100%' }} onClick={() => setOpen(!open)}>
+      <ClipboardList size={15} /> {open ? 'إغلاق نموذج التعديل' : 'طلب تعديل على الطلب'}
+    </button>
+    {open && <div className="sf-revision-form">
+      {changedItems.length > 0 && <div className="sf-revision-summary">{changedItems.length} بند تم تعديله</div>}
+      {(order.items ?? []).map((item) => <div className="sf-revision-row" key={item.id}>
+        <span>{item.product_name_snapshot}</span>
+        <small>الأصلي: {formatNumber(item.quantity)}</small>
+        <input type="number" min="0" placeholder="الكمية الجديدة" value={items[item.id] ?? ''}
+          onChange={(e) => setItems((prev) => ({ ...prev, [item.id]: e.target.value }))} />
+      </div>)}
+      <label className="sf-form-field"><span>سبب التعديل *</span>
+        <textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="مثال: الكمية أكبر من المطلوب" /></label>
+      <label className="sf-form-field"><span>رقم هاتف التحقق *</span>
+        <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="7XX XXX XXX" inputMode="tel" dir="ltr" /></label>
+      {error && <div className="sf-form-error">{error}</div>}
+      <button className="sf-btn-primary" onClick={submit} disabled={saving}>{saving ? 'جار الإرسال...' : 'إرسال طلب التعديل'}</button>
+    </div>}
+  </>;
 }

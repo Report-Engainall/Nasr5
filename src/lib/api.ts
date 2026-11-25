@@ -463,6 +463,231 @@ export async function fetchOrderByNumber(orderNumber: string, phone?: string): P
   return { ...order, status_history: history ?? [] } as TrackedOrder;
 }
 
+// ─── Order revision cycle (customer request → merchant decision) ───
+export type OrderRevision = {
+  id: string;
+  organization_id: string;
+  order_id: string;
+  revision_number: number;
+  reason: string;
+  items: { order_item_id: string; product_name: string; original_qty: number; requested_qty: number }[];
+  status: 'pending' | 'approved' | 'rejected';
+  new_order_id: string | null;
+  requested_phone: string | null;
+  decided_at: string | null;
+  created_at: string;
+};
+
+export async function fetchOrderRevisions(orderId: string): Promise<OrderRevision[]> {
+  const { data, error } = await supabase
+    .from('order_revisions').select('*').eq('order_id', orderId)
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return data as OrderRevision[];
+}
+
+export async function fetchPendingRevisions(): Promise<OrderRevision[]> {
+  const { data, error } = await supabase
+    .from('order_revisions').select('*').eq('organization_id', ORG_ID)
+    .eq('status', 'pending').order('created_at', { ascending: false });
+  if (error) throw error;
+  return data as OrderRevision[];
+}
+
+export async function requestOrderRevision(input: {
+  order_id: string;
+  order_number: string;
+  reason: string;
+  phone: string;
+  items: { order_item_id: string; product_name: string; original_qty: number; requested_qty: number }[];
+}): Promise<OrderRevision> {
+  const { count } = await supabase
+    .from('order_revisions').select('id', { count: 'exact', head: true })
+    .eq('order_id', input.order_id);
+  const { data, error } = await supabase.from('order_revisions').insert({
+    organization_id: ORG_ID,
+    order_id: input.order_id,
+    revision_number: (count ?? 0) + 1,
+    reason: input.reason,
+    items: input.items,
+    requested_phone: input.phone,
+  }).select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function decideOrderRevision(input: {
+  revision: OrderRevision;
+  approve: boolean;
+}): Promise<{ newOrderNumber: string | null }> {
+  const { revision, approve } = input;
+  const { data: order } = await supabase
+    .from('orders').select('*').eq('id', revision.order_id).maybeSingle();
+  if (!order) throw new Error('الطلب الأصلي غير موجود');
+
+  const { data: items } = await supabase
+    .from('order_items').select('*').eq('order_id', revision.order_id);
+  if (!items) throw new Error('تعذر قراءة بنود الطلب');
+
+  let newOrderNumber: string | null = null;
+
+  if (approve) {
+    // Build the revised item set: requested quantities replace originals, zero-qty items dropped
+    const requested = new Map(revision.items.map((i) => [i.order_item_id, i.requested_qty]));
+    const revisedItems = (items as OrderItem[])
+      .map((i) => ({ ...i, quantity: requested.get(i.id) ?? Number(i.quantity) }))
+      .filter((i) => Number(i.quantity) > 0);
+    if (!revisedItems.length) throw new Error('لا توجد بنود بعد التعديل');
+
+    const totalAmount = revisedItems.reduce((s, i) => s + Number(i.unit_price_snapshot) * Number(i.quantity), 0);
+    const newOrderNumberGen = `ORD-${Date.now().toString().slice(-8)}`;
+    const { data: newOrder, error: insertError } = await supabase.from('orders').insert({
+      organization_id: ORG_ID,
+      customer_id: order.customer_id,
+      order_number: newOrderNumberGen,
+      status: 'pending',
+      total_amount: totalAmount,
+      total_items: revisedItems.length,
+      notes: `تعديل للطلب ${order.order_number} — سبب: ${revision.reason}`,
+      contact_phone: order.contact_phone,
+      delivery_address: order.delivery_address,
+      payment_method: order.payment_method,
+    }).select().single();
+    if (insertError) throw insertError;
+
+    const { error: itemsInsertError } = await supabase.from('order_items').insert(
+      revisedItems.map((i) => ({
+        order_id: newOrder.id,
+        product_id: i.product_id,
+        item_code: i.item_code,
+        product_name_snapshot: i.product_name_snapshot,
+        unit_snapshot: i.unit_snapshot,
+        quantity: i.quantity,
+        unit_price_snapshot: i.unit_price_snapshot,
+        discount_snapshot: i.discount_snapshot,
+        line_total: Number(i.unit_price_snapshot) * Number(i.quantity),
+      }))
+    );
+    if (itemsInsertError) throw itemsInsertError;
+
+    newOrderNumber = newOrder.order_number;
+    await supabase.from('orders').update({ status: 'revised' }).eq('id', order.id);
+    await supabase.from('order_status_history').insert({
+      order_id: order.id, from_status: order.status, to_status: 'revised',
+      notes: `اعتُمد التعديل رقم ${revision.revision_number} وأنشئ الطلب ${newOrder.order_number}`,
+    });
+  }
+
+  const { error: updateError } = await supabase.from('order_revisions').update({
+    status: approve ? 'approved' : 'rejected',
+    new_order_id: approve ? newOrderNumber : null,
+    decided_at: new Date().toISOString(),
+  }).eq('id', revision.id);
+  if (updateError) throw updateError;
+
+  return { newOrderNumber };
+}
+
+// ─── Daily decisions engine ───
+export type DailyDecision = {
+  id: string;
+  severity: 'critical' | 'warning' | 'info';
+  title: string;
+  problem: string;
+  cause: string;
+  source: string;
+  impact: string;
+  action: string;
+  impactValue: number;
+};
+
+export async function fetchDailyDecisions(): Promise<DailyDecision[]> {
+  const [products, customers, orders, lowStockInv] = await Promise.all([
+    fetchProducts(),
+    fetchCustomers(),
+    fetchOrders(),
+    supabase.from('inventory_balances').select('product_id, quantity_on_hand, quantity_available, reorder_point').eq('warehouse_id', WAREHOUSE_ID),
+  ]);
+  const decisions: DailyDecision[] = [];
+
+  // 1. Out-of-stock products with demand
+  const invByProduct = new Map((lowStockInv.data ?? []).map((i: { product_id: string; quantity_on_hand: number; quantity_available: number; reorder_point: number }) => [i.product_id, i]));
+  for (const p of products) {
+    const inv = invByProduct.get(p.id);
+    const available = inv?.quantity_available ?? 0;
+    if (available <= 0 && p.status === 'active') {
+      decisions.push({
+        id: `oos-${p.id}`, severity: 'critical',
+        title: `الصنف "${p.name}" نفد من المخزون`,
+        problem: 'الصنف غير قابل للبيع حالياً',
+        cause: 'استهلك الرصيد المتاح دون أمر شراء مستلم',
+        source: `أرصدة المخزون — ${p.item_code}`,
+        impact: 'خسارة مبيعات محتملة على الصنف',
+        action: 'افتح المركز المالي → محرك إعادة التوريد وأنشئ أمر شراء',
+        impactValue: Number(p.base_price) * 10,
+      });
+    } else if (inv && available <= inv.reorder_point) {
+      decisions.push({
+        id: `low-${p.id}`, severity: 'warning',
+        title: `الصنف "${p.name}" عند حد إعادة الطلب`,
+        problem: `المتاح ${formatNumber(available)} عند حد ${formatNumber(inv.reorder_point)}`,
+        cause: 'مبيعات جارية تستهلك الرصيد',
+        source: `أرصدة المخزون — ${p.item_code}`,
+        impact: 'خطر نفاد قريب',
+        action: 'راجع محرك إعادة التوريد وأنشئ أمر شراء قبل النفاد',
+        impactValue: Number(p.base_price) * 5,
+      });
+    }
+  }
+
+  // 2. Largest overdue customer balances
+  const debtors = customers.filter((c) => c.current_balance > 0).sort((a, b) => b.current_balance - a.current_balance).slice(0, 3);
+  for (const c of debtors) {
+    decisions.push({
+      id: `debtor-${c.id}`, severity: 'warning',
+      title: `مستحقات غير محصلة لدى "${c.business_name}"`,
+      problem: `رصيد مستحق ${formatCurrency(c.current_balance)}`,
+      cause: 'مبيعات آجلة لم تُحصَّل بعد',
+      source: `ملف العميل ${c.customer_code}`,
+      impact: 'تجميد رأس المال العامل وتزايد مخاطر التحصيل',
+      action: 'تواصل مع العميل وسجل التحصيل من شاشة المدفوعات',
+      impactValue: Number(c.current_balance),
+    });
+  }
+
+  // 3. Stalled orders (pending > 24h)
+  const stalled = orders.filter((o) => o.status === 'pending' && Date.now() - new Date(o.created_at).getTime() > 86400000);
+  for (const o of stalled.slice(0, 3)) {
+    decisions.push({
+      id: `stalled-${o.id}`, severity: 'critical',
+      title: `الطلب #${o.order_number} معلق أكثر من 24 ساعة`,
+      problem: `قيمة ${formatCurrency(o.total_amount)} بانتظار التأكيد`,
+      cause: 'لم يُعتمد الطلب أو يُتواصل مع العميل',
+      source: `سجل الطلبات — ${o.customer?.business_name ?? 'عميل'}`,
+      impact: 'خطر إلغاء العميل أو فقدان الثقة',
+      action: 'راجع الطلب وأكد تجهيزه أو تواصل مع العميل',
+      impactValue: Number(o.total_amount),
+    });
+  }
+
+  // 4. Payables due to suppliers
+  const { data: suppliers } = await supabase.from('suppliers').select('id, name, current_balance').eq('organization_id', ORG_ID);
+  for (const s of (suppliers ?? []).filter((s: { current_balance: number }) => Number(s.current_balance) > 0).slice(0, 2)) {
+    decisions.push({
+      id: `payable-${s.id}`, severity: 'info',
+      title: `التزام سداد للمورد "${s.name}"`,
+      problem: `مستحق ${formatCurrency(s.current_balance)}`,
+      cause: 'مشتريات آجلة مسجلة في الذمم الدائنة',
+      source: `ملف المورد`,
+      impact: 'تأخر السداد يضعف شروط التوريد',
+      action: 'سدد من شاشة المدفوعات وفق الاتفاق',
+      impactValue: Number(s.current_balance),
+    });
+  }
+
+  return decisions.sort((a, b) => (b.severity === 'critical' ? 1 : 0) - (a.severity === 'critical' ? 1 : 0) || b.impactValue - a.impactValue);
+}
+
 // ─── Finance: cash accounts, payments ───
 export async function fetchCashAccounts(): Promise<CashAccount[]> {
   const { data, error } = await supabase

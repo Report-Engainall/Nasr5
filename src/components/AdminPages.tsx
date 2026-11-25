@@ -6,13 +6,13 @@ import {
 } from 'lucide-react';
 import {
   fetchAiAlerts, fetchAiTasks, fetchNotifications, fetchOrders, fetchOrderItems,
-  fetchSettings, fetchSuppliers,
+  fetchOrderRevisions, fetchSettings, fetchSuppliers, decideOrderRevision,
   markAllNotificationsRead, markNotificationRead, resolveAiAlert, toggleAiTaskStatus,
   updateOrderStatus, updateSetting, createSupplier,
 } from '@/lib/api';
 import { useFetch } from '@/lib/useFetch';
 import { formatCurrency, formatDateShort, formatNumber, timeAgo } from '@/lib/format';
-import type { AiAlert, AiTask, Notification, Supplier, AdminSetting, OrderItem } from '@/lib/types';
+import type { AiAlert, AiTask, Notification, Supplier, AdminSetting, OrderItem, OrderRevision } from '@/lib/types';
 
 import type { LucideIcon } from 'lucide-react';
 import { supabase, ORG_ID } from '@/lib/supabase';
@@ -43,11 +43,34 @@ export function AiCenter({ onNotice }: { onNotice: (m: string) => void }) {
 export function OrderDetail({ orderId, onBack, onNotice }: { orderId: string; onBack: () => void; onNotice: (m: string) => void }) {
   const { data: orders } = useFetch(fetchOrders);
   const { data: items, loading, refetch } = useFetch(() => fetchOrderItems(orderId), [orderId]);
+  const { data: revisions, refetch: refetchRevisions } = useFetch(() => fetchOrderRevisions(orderId), [orderId]);
   const order = orders?.find((o) => o.id === orderId);
+  const [deciding, setDeciding] = useState<string | null>(null);
   async function changeStatus(status: string) { try { await updateOrderStatus(orderId, status); refetch(); onNotice(`تم تحديث حالة الطلب إلى: ${status}`); } catch (e) { onNotice(e instanceof Error ? e.message : 'خطأ'); } }
+  async function decide(revision: OrderRevision, approve: boolean) {
+    setDeciding(revision.id);
+    try {
+      const result = await decideOrderRevision({ revision, approve });
+      refetchRevisions(); refetch();
+      onNotice(approve && result.newOrderNumber ? `اعتُمد التعديل وأنشئ الطلب ${result.newOrderNumber}` : 'تم رفض طلب التعديل');
+    } catch (e) { onNotice(e instanceof Error ? e.message : 'تعذر تنفيذ القرار'); } finally { setDeciding(null); }
+  }
   const statuses = ['pending', 'confirmed', 'processing', 'delivered'];
-  return <AdminPage eyebrow="المبيعات والعملاء" title={`الطلب #${order?.order_number ?? ''}`} description="تفاصيل الطلب وبنوده وحالة التجهيز" icon={Package} note="" toolbar={<Button variant="secondary" onClick={onBack}><ChevronLeft size={16} /> رجوع</Button>}>
-    {order && <div className="order-detail-grid"><div className="order-info-panel"><div className="order-info-row"><span>العميل</span><strong>{order.customer?.business_name ?? '—'}</strong></div><div className="order-info-row"><span>التاريخ</span><strong>{formatDateShort(order.created_at)}</strong></div><div className="order-info-row"><span>الإجمالي</span><strong>{formatCurrency(order.total_amount)}</strong></div><div className="order-info-row"><span>عدد البنود</span><strong>{formatNumber(order.total_items)}</strong></div><div className="order-info-row"><span>الحالة الحالية</span><span className={`badge ${order.status === 'delivered' ? 'success' : 'info'}`}>{order.status}</span></div></div><div className="order-status-panel"><h3>تغيير الحالة</h3><div className="order-status-btns">{statuses.map((s) => <button key={s} className={order.status === s ? 'active' : ''} onClick={() => changeStatus(s)}>{s}</button>)}</div></div></div>}
+  const pendingRevisions = revisions?.filter((r) => r.status === 'pending') ?? [];
+  return <AdminPage eyebrow="المبيعات والعملاء" title={`الطلب #${order?.order_number ?? ''}`} description="تفاصيل الطلب وبنوده وحالة التجهيز وطلبات التعديل" icon={Package} note="" toolbar={<Button variant="secondary" onClick={onBack}><ChevronLeft size={16} /> رجوع</Button>}>
+    {order && <div className="order-detail-grid"><div className="order-info-panel"><div className="order-info-row"><span>العميل</span><strong>{order.customer?.business_name ?? '—'}</strong></div><div className="order-info-row"><span>التاريخ</span><strong>{formatDateShort(order.created_at)}</strong></div><div className="order-info-row"><span>الإجمالي</span><strong>{formatCurrency(order.total_amount)}</strong></div><div className="order-info-row"><span>عدد البنود</span><strong>{formatNumber(order.total_items)}</strong></div><div className="order-info-row"><span>الحالة الحالية</span><span className={`badge ${order.status === 'delivered' ? 'success' : order.status === 'revised' ? 'warning' : 'info'}`}>{({ pending: 'بانتظار التأكيد', confirmed: 'مؤكد', processing: 'قيد التجهيز', delivered: 'تم التسليم', revised: 'معدّل' }[order.status] ?? order.status)}</span></div></div><div className="order-status-panel"><h3>تغيير الحالة</h3><div className="order-status-btns">{statuses.map((s) => <button key={s} className={order.status === s ? 'active' : ''} onClick={() => changeStatus(s)}>{s}</button>)}</div></div></div>}
+    <section className="panel" style={{ marginTop: 16 }}><div className="panel-head"><div><h2>طلبات تعديل الطلب</h2><p>طلبات العميل لتعديل الكميات — الاعتماد ينشئ طلباً جديداً مرتبطاً بالأصل دون تغيير التاريخ</p></div></div>
+      {revisions?.length ? revisions.map((r) => <div className="alert-row" key={r.id}>
+        <span className={`severity ${r.status === 'approved' ? 'info' : r.status === 'rejected' ? 'critical' : 'warning'}`}><FileText size={16} /></span>
+        <div><strong>تعديل #{r.revision_number} — {r.status === 'pending' ? 'قيد المراجعة' : r.status === 'approved' ? 'معتمد' : 'مرفوض'}</strong>
+          <p>السبب: {r.reason} — البنود: {r.items.map((i) => `${i.product_name} (${formatNumber(i.original_qty)} ← ${formatNumber(i.requested_qty)})`).join('، ')}</p>
+          <small>{r.new_order_id ? `الطلب البديل: ${r.new_order_id.slice(0, 8)}` : formatDateShort(r.created_at)}</small></div>
+        {r.status === 'pending' && <div style={{ display: 'flex', gap: 8 }}>
+          <Button variant="outline" disabled={deciding === r.id} onClick={() => decide(r, false)}>رفض</Button>
+          <Button disabled={deciding === r.id} onClick={() => decide(r, true)}>{deciding === r.id ? '...' : 'اعتماد'}</Button>
+        </div>}
+      </div>) : <Empty text="لا توجد طلبات تعديل على هذا الطلب" />}
+    </section>
     <section className="panel table-panel" style={{ marginTop: 16 }}><div className="table-head"><h2>بنود الطلب</h2></div>{loading ? <Loading /> : <TableWrap><table><thead><tr><th>المنتج</th><th>الرمز</th><th>الكمية</th><th>السعر</th><th>الإجمالي</th></tr></thead><tbody>{items?.map((it: OrderItem) => <tr key={it.id}><td><strong>{it.product_name_snapshot}</strong></td><td><code>{it.item_code}</code></td><td>{formatNumber(it.quantity)} {it.unit_snapshot ?? ''}</td><td>{formatCurrency(it.unit_price_snapshot)}</td><td>{formatCurrency(it.line_total)}</td></tr>)}</tbody></table></TableWrap>}</section>
   </AdminPage>;
 }

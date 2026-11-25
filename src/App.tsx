@@ -23,8 +23,9 @@ import {
 } from '@/components/AdminPages';
 import { OperationsCenter } from '@/components/OperationsCenter';
 import { FinanceCenter } from '@/components/FinanceCenter';
+import { DailyDecisions } from '@/components/DailyDecisions';
 
-type View = 'dashboard' | 'products' | 'customers' | 'orders' | 'finance' | 'pricing' | 'offers' | 'reports' | 'data' | 'operations' | 'notifications' | 'ai' | 'suppliers' | 'devices' | 'settings';
+type View = 'dashboard' | 'products' | 'customers' | 'orders' | 'finance' | 'decisions' | 'pricing' | 'offers' | 'reports' | 'data' | 'operations' | 'notifications' | 'ai' | 'suppliers' | 'devices' | 'settings';
 type IconType = typeof LayoutDashboard;
 
 const nav: { id: View; label: string; icon: IconType }[] = [
@@ -33,6 +34,7 @@ const nav: { id: View; label: string; icon: IconType }[] = [
   { id: 'customers', label: 'العملاء', icon: Users },
   { id: 'orders', label: 'الطلبات', icon: ShoppingCart },
   { id: 'finance', label: 'المركز المالي', icon: Landmark },
+  { id: 'decisions', label: 'القرارات اليومية', icon: TrendingUp },
   { id: 'pricing', label: 'التسعير والمخزون', icon: SlidersHorizontal },
   { id: 'offers', label: 'العروض', icon: Tag },
   { id: 'suppliers', label: 'الموردون', icon: Package },
@@ -75,6 +77,7 @@ function AppContent() {
           {view === 'orders' && !orderDetailId && <Orders onViewDetail={setOrderDetailId} />}
           {view === 'orders' && orderDetailId && <OrderDetail orderId={orderDetailId} onBack={() => setOrderDetailId(null)} onNotice={showNotice} />}
           {view === 'finance' && <FinanceCenter onNotice={showNotice} />}
+          {view === 'decisions' && <DailyDecisions onNotice={showNotice} onNavigate={(target) => { if (target) setView(target); }} />}
           {view === 'pricing' && <Pricing onNotice={showNotice} />}
           {view === 'offers' && <Offers onNotice={showNotice} />}
           {view === 'suppliers' && <Suppliers onNotice={showNotice} />}
